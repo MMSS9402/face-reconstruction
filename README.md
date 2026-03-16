@@ -1,89 +1,137 @@
-# 3D Face Reconstruction & Mask Material Synthesis
+# DECA Face Mask Composer
 
-DECA 기반 3D 얼굴 복원 + Blender PBR 렌더링으로 실리콘/라텍스/레진 마스크 재질을 합성하는 파이프라인.
+DECA 기반 3D 얼굴 복원을 사용해 첫 번째 이미지의 얼굴에서 `detail mesh overlay`를 만들고, 두 번째 이미지의 얼굴 landmark와 색 톤에 맞춰 자연스럽게 합성하는 웹앱입니다.
 
-iBeta Level 2 인증을 위한 3D 마스크 공격 탐지 학습용 합성 데이터를 생성합니다.
+현재 메인 앱은 예전의 `silicone / latex / resin` 재질 합성 파이프라인이 아니라, 다음 흐름으로 동작합니다.
 
-## Pipeline
+1. `source image`에서 DECA로 3D 얼굴 mesh를 복원합니다.
+2. source crop 공간에서 `detail mesh overlay`를 RGBA로 렌더링합니다.
+3. `target image`에서 얼굴 정렬 기준과 68 landmark를 추출합니다.
+4. source landmark를 target landmark에 정렬한 뒤, target 얼굴 색 톤에 맞게 보정합니다.
+5. 최종 `mask_composite.png`를 생성합니다.
 
+## Current Pipeline
+
+```text
+Source Image
+    │
+    ▼
+[DECA preprocessing]
+    │
+    ▼
+[FLAME + Detail Decoder]
+    │
+    ├── detail.obj / detail.ply / coarse.ply / full_head.ply
+    │
+    ▼
+[Detail Mesh Overlay Render in crop space]
+    │
+    ▼
+mask_render.png
+
+Target Image
+    │
+    ▼
+[target face crop + 68 landmarks]
+    │
+    ▼
+[source->target landmark alignment]
+    │
+    ▼
+[target skin-tone matching in Lab space]
+    │
+    ▼
+mask_composite.png
 ```
-Input Image
-    │
-    ▼
-[FAN Landmark Detection] ─── 68-point 랜드마크
-    │
-    ▼
-[DECA Encoder] ─── FLAME shape/expression/pose 파라미터 + detail code
-    │
-    ▼
-[FLAME Decode] ─── Coarse mesh (5K vertices)
-    │
-    ▼
-[Detail Decoder] ─── UV displacement map → Detail mesh (~21K face-only vertices)
-    │
-    ▼
-[Vertex Color Sampling] ─── Orthographic projection으로 원본에서 텍스처 추출
-    │
-    ▼
-[Blender Cycles PBR] ─── 실리콘/라텍스/레진 3종 재질 렌더링 (224×224, DECA crop space)
-    │                      Principled BSDF + SSS + 스튜디오 조명
-    ▼
-[Composite] ─── Blender 렌더를 원본 이미지에 합성 (affine warp + alpha blending)
-    │
-    ▼
-Output: 원본 | 실리콘 합성 | 라텍스 합성 | 레진 합성
+
+## Main Files
+
+```text
+scripts/webapp_deca.py            Flask 웹앱 메인 진입점
+scripts/composite_blender.py      target landmark 정렬 + 색 톤 보정 + 합성
+scripts/render_blender.py         보조 Blender 렌더 테스트 스크립트
+scripts/test_blender_pipeline.py  단일 렌더/합성 테스트
+README.md                         현재 앱 설명
 ```
 
 ## Requirements
 
-- **OS**: Ubuntu 20.04+ (Linux)
-- **GPU**: NVIDIA GPU (CUDA 지원, RTX 3090 권장)
-- **NVIDIA Driver**: 550+
-- **Conda**: Anaconda 또는 Miniconda
-- **Blender**: 4.2 LTS (자동 다운로드 스크립트 제공)
-- **Disk**: ~10GB (DECA 모델 + Blender + FLAME 데이터)
+- Ubuntu 20.04+
+- Conda
+- Python 3.9
+- DECA + FLAME 데이터
+- Blender 4.2 LTS (선택 사항: 보조 렌더 테스트용)
 
-## Project Structure
+## Important Directory Layout
 
+현재 코드(`scripts/webapp_deca.py`)는 아래 구조를 기대합니다.
+이 구조대로 두면 추가 수정 없이 README만 따라 세팅할 수 있습니다.
+
+```text
+workspace/
+├── synthetic_3d_attack/
+│   └── third_party/
+│       └── DECA/
+│           ├── decalib/
+│           └── data/
+│               ├── deca_model.tar
+│               ├── generic_model.pkl
+│               ├── texture_data_256.npy
+│               ├── fixed_displacement_256.npy
+│               ├── uv_face_mask.png
+│               └── uv_face_eye_mask.png
+└── face_reconstruction/
+    ├── scripts/
+    ├── docs/
+    └── README.md
 ```
-face_reconstruction/
-├── scripts/
-│   ├── webapp_deca.py          # Flask 웹앱 (메인 진입점)
-│   ├── render_blender.py       # Blender PBR 재질 렌더링 스크립트
-│   ├── composite_blender.py    # Blender 렌더 → 원본 합성
-│   └── test_blender_pipeline.py # 파이프라인 테스트 스크립트
-├── data/
-│   └── test_images/            # 테스트용 샘플 이미지
-├── docs/                       # 문서
-└── README.md
-```
 
-## Setup
+즉 이 저장소(`face_reconstruction`)와 `synthetic_3d_attack`는 **같은 부모 폴더 아래 sibling**으로 있어야 합니다.
 
-### 1. 저장소 클론
+## Setup From Scratch
+
+아래 순서를 처음부터 그대로 따라가면 됩니다.
+
+### 1. 작업 폴더 준비
 
 ```bash
-git clone https://github.com/<your-username>/face-reconstruction.git
-cd face-reconstruction
+mkdir -p ~/workspace
+cd ~/workspace
 ```
 
-### 2. Conda 환경 생성
+### 2. 이 저장소 배치
+
+이 저장소를 `~/workspace/face_reconstruction` 에 둡니다.
+
+예시:
+
+```bash
+cd ~/workspace
+git clone <this-repo-url> face_reconstruction
+```
+
+이미 압축 해제나 복사본이 있다면, 최종 위치가 아래처럼 되면 됩니다.
+
+```text
+~/workspace/face_reconstruction
+```
+
+### 3. Conda 환경 생성
 
 ```bash
 conda create -n deca-env python=3.9 -y
 conda activate deca-env
 ```
 
-### 3. PyTorch 설치 (CUDA 12.1)
+### 4. PyTorch 설치
+
+가장 이식성 있게 가려면 공식 가이드 대신 기본 설치로 시작하는 편이 안전합니다.
 
 ```bash
-pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121
+pip install torch torchvision
 ```
 
-> **Note**: GPU에 맞는 CUDA 버전을 선택하세요. [PyTorch 공식 사이트](https://pytorch.org/get-started/locally/) 참고.
-
-### 4. Python 의존성 설치
+### 5. Python 의존성 설치
 
 ```bash
 pip install flask==3.1.3 \
@@ -101,202 +149,160 @@ pip install flask==3.1.3 \
     iopath==0.1.10
 ```
 
-### 5. DECA 설치
+### 6. DECA 설치
 
-DECA는 별도의 서드파티 모듈입니다.
+중요: DECA는 반드시 `face_reconstruction`와 같은 부모 폴더 아래의 `synthetic_3d_attack/third_party/DECA` 위치에 두어야 합니다.
 
 ```bash
-# 프로젝트 루트 기준
-mkdir -p third_party && cd third_party
+cd ~/workspace
+mkdir -p synthetic_3d_attack/third_party
+cd synthetic_3d_attack/third_party
 git clone https://github.com/yfeng95/DECA.git
 cd DECA
-```
-
-#### FLAME 모델 데이터 다운로드
-
-1. [FLAME 공식 사이트](https://flame.is.tue.mpg.de/)에 가입
-2. DECA의 `fetch_data.sh` 실행:
-
-```bash
 bash fetch_data.sh
 ```
 
-이 스크립트가 다음을 다운로드합니다:
-- `data/generic_model.pkl` — FLAME 모델
-- `data/deca_model.tar` — DECA 사전 학습 가중치
+설치 후 최종 위치는 아래와 같아야 합니다.
 
-다운로드 후 `data/` 디렉토리 구조:
-```
-DECA/data/
-├── generic_model.pkl
-├── deca_model.tar
-├── FLAME2020/
-├── fixed_displacement_256.npy
-├── head_template.obj
-├── landmark_embedding.npy
-├── mean_texture.jpg
-├── texture_data_256.npy
-├── uv_face_eye_mask.png
-├── uv_face_mask.png
-└── extra_models/
+```text
+~/workspace/synthetic_3d_attack/third_party/DECA
 ```
 
-### 6. Blender 설치 (Headless)
+### 7. Blender 설치
+
+현재 메인 웹앱은 Blender 없이 동작합니다.
+다만 `scripts/render_blender.py` 또는 `scripts/test_blender_pipeline.py`를 별도로 사용할 경우 Blender가 필요합니다.
 
 ```bash
-# 프로젝트 루트로 이동
-cd /path/to/face-reconstruction
-
-# Blender 4.2 LTS 다운로드 및 설치
-mkdir -p tools && cd tools
+cd ~/workspace
+mkdir -p tools
+cd tools
 wget https://mirror.clarkson.edu/blender/release/Blender4.2/blender-4.2.13-linux-x64.tar.xz
 tar xf blender-4.2.13-linux-x64.tar.xz
 rm blender-4.2.13-linux-x64.tar.xz
-cd ..
 ```
 
-설치 확인:
+## Preflight Check
+
+서버를 띄우기 전에 아래 두 가지를 먼저 확인하세요.
+
+### 1. 디렉토리 구조 확인
+
 ```bash
-./tools/blender-4.2.13-linux-x64/blender --version
-# → Blender 4.2.13 LTS
+ls ~/workspace
 ```
 
-### 7. 경로 설정 확인
+적어도 아래 두 디렉토리가 보여야 합니다.
 
-`scripts/webapp_deca.py`에서 다음 경로들이 올바른지 확인하세요:
-
-```python
-ROOT = Path(__file__).resolve().parent.parent          # face_reconstruction/
-DECA_DIR = ROOT.parent / "third_party" / "DECA"        # DECA 위치
-BLENDER_PATH = ROOT.parent / "tools" / "blender-4.2.13-linux-x64" / "blender"
+```text
+face_reconstruction
+synthetic_3d_attack
 ```
 
-프로젝트 디렉토리 구조가 다음과 같아야 합니다:
-```
-project-root/
-├── face_reconstruction/    # 이 저장소
-│   └── scripts/
-├── third_party/
-│   └── DECA/              # DECA (fetch_data.sh 실행 완료)
-└── tools/
-    └── blender-4.2.13-linux-x64/
+### 2. DECA 데이터 확인
+
+```bash
+ls ~/workspace/synthetic_3d_attack/third_party/DECA/data
 ```
 
-## Run (실행)
+아래 파일들이 있어야 합니다.
 
-### 웹앱 서버 시작
+```text
+deca_model.tar
+generic_model.pkl
+texture_data_256.npy
+fixed_displacement_256.npy
+uv_face_mask.png
+uv_face_eye_mask.png
+```
+
+## Run
 
 ```bash
 conda activate deca-env
-cd face_reconstruction
+cd ~/workspace/face_reconstruction
+python scripts/webapp_deca.py
+```
+
+또는:
+
+```bash
+cd ~/workspace/face_reconstruction
 conda run -n deca-env python scripts/webapp_deca.py
 ```
 
-서버가 시작되면 다음과 같이 출력됩니다:
-```
-============================================================
-  DECA Face Reconstruction 초기화 중...
-============================================================
+브라우저에서 `http://localhost:5000` 으로 접속합니다.
 
-[1/1] DECA 모델 로딩...
-  DECA 모델 로딩 중...
-  Face-only filter: 21,440/39,470 vertices (41,986/77,400 faces)
-  DECA 로딩 완료!
+## Web App Inputs
 
-============================================================
-  서버 시작: http://localhost:5000
-============================================================
-```
+- `source image`: 3D detail mesh overlay를 생성할 얼굴 이미지
+- `target image`: 생성된 overlay를 합성할 원본 얼굴 이미지
 
-### 웹앱 접속
+권장 입력 조건:
 
-브라우저에서 **http://localhost:5000** 으로 접속합니다.
+- JPG 또는 PNG
+- 얼굴이 충분히 크게 보이는 이미지
+- 눈, 코, 입이 가려지지 않은 이미지
+- 정면 또는 약한 측면 얼굴
+- source와 target의 포즈 차이가 너무 크지 않은 이미지
 
-1. 얼굴 사진을 업로드합니다 (JPG/PNG)
-2. 약 15~20초 후 결과가 표시됩니다:
-   - **3D Detail Mesh 뷰어** — Three.js 인터랙티브 3D 뷰어
-   - **3D 복원 결과** — 원본 크롭 / 메시 오버레이 / 랜드마크
-   - **마스크 재질 합성** — 원본 / 실리콘 / 라텍스 / 레진
-3. 메시(OBJ/PLY) 및 합성 이미지를 다운로드할 수 있습니다
+## Outputs
 
-### 백그라운드 실행
+웹앱 결과 페이지에서 다음 결과를 확인할 수 있습니다.
 
-서버를 백그라운드에서 실행하려면:
+- `source_original.jpg`
+- `target_original.jpg`
+- `source_reconstruction.png`
+- `mask_render.png`
+- `mask_composite.png`
+- `detail.obj`
+- `detail.ply`
+- `coarse.ply`
+- `full_head.ply`
 
-```bash
-# 백그라운드 실행 (로그를 파일로 저장)
-nohup conda run -n deca-env python scripts/webapp_deca.py > server.log 2>&1 &
+## Result Meaning
 
-# 프로세스 ID 확인
-echo $!
-```
-
-## Stop (종료)
-
-### 포그라운드 실행 중일 때
-
-터미널에서 `Ctrl+C`를 누르면 서버가 종료됩니다.
-
-### 백그라운드 실행 중일 때
-
-```bash
-# 방법 1: PID로 종료 (서버 시작 시 출력된 PID 사용)
-kill <PID>
-
-# 방법 2: 포트 5000번을 사용하는 프로세스 찾아서 종료
-lsof -ti :5000 | xargs kill
-
-# 방법 3: 프로세스 이름으로 찾아서 종료
-ps aux | grep webapp_deca | grep -v grep
-kill <찾은_PID>
-```
-
-### 서버가 완전히 종료됐는지 확인
-
-```bash
-# 포트 5000번 사용 중인 프로세스가 없으면 종료 완료
-lsof -i :5000
-# (출력 없으면 종료됨)
-```
-
-## Material Presets
-
-| 재질 | SSS | Roughness | Specular | Coat | 특징 |
-|------|-----|-----------|----------|------|------|
-| **Silicone** | 0.55 | 0.38 | 0.65 | 0.20 | 높은 반투명, 피부 아래 빛 번짐, 부드러운 반광택 |
-| **Latex** | 0.12 | 0.60 | 0.35 | 0.08 | 매트한 고무 질감, 약한 광택 |
-| **Resin** | 0.03 | 0.08 | 0.85 | 0.55 | 강한 플라스틱 광택, 하드한 반사, SSS 거의 없음 |
+- `source_reconstruction.png`: source crop, detail mesh overlay, 68 landmarks를 나란히 보여주는 시각화
+- `mask_render.png`: source crop 공간에서 렌더한 detail mesh overlay RGBA 결과
+- `mask_composite.png`: target 얼굴 위치와 색 톤에 맞춰 보정 후 합성한 최종 결과
 
 ## Troubleshooting
 
-### CUDA out of memory
-GPU 메모리가 부족할 경우 `webapp_deca.py`의 디바이스를 CPU로 변경:
-```python
-deca_model = DECAModel(device="cpu")
+### source 또는 target 얼굴 검출 실패
+
+다음 경우 source 또는 target 이미지에서 얼굴을 찾지 못할 수 있습니다.
+
+- 얼굴이 너무 작음
+- 가림이 심함
+- 측면 각도가 너무 큼
+- 조명이 너무 어두움
+
+### `.jpeg` 업로드 문제
+
+DECA 내부 전처리는 확장자 처리에 민감합니다.
+현재 웹앱은 업로드된 `.jpeg` 파일을 내부적으로 `.jpg`로 저장해 처리합니다.
+
+### `No module named decalib` 또는 DECA 경로 오류
+
+대부분 디렉토리 구조 문제입니다.
+아래 위치를 다시 확인하세요.
+
+```text
+~/workspace/synthetic_3d_attack/third_party/DECA
+~/workspace/face_reconstruction
 ```
 
-### Blender GPU 렌더링 실패
-Blender가 CUDA GPU를 인식하지 못하면 `render_blender.py`의 `setup_render()`에서:
-```python
-prefs.compute_device_type = "CUDA"  # → "OPTIX" 또는 "NONE"으로 변경
-```
+두 디렉토리가 같은 부모(`~/workspace`) 아래 있어야 합니다.
 
-### FLAME 모델 경로 오류
-`deca_model.tar`와 `generic_model.pkl`이 DECA의 `data/` 디렉토리에 있는지 확인하세요.
+### FLAME / DECA 데이터 경로 오류
 
-### 포트 충돌
-5000번 포트가 이미 사용 중이면:
-```bash
-# 사용 중인 프로세스 확인
-lsof -i :5000
+DECA의 `data/` 아래에 `deca_model.tar`, `generic_model.pkl` 등이 있는지 확인하세요.
 
-# 다른 포트로 실행
-conda run -n deca-env python scripts/webapp_deca.py  # webapp_deca.py 내 port=5000을 변경
-```
+### 포트 5000 실행 실패
 
-## License
+이미 다른 프로세스가 포트를 쓰고 있을 수 있습니다.
+로컬 터미널에서 직접 실행해 확인하는 것이 가장 정확합니다.
 
-이 프로젝트는 연구 목적으로 작성되었습니다.
-- [DECA](https://github.com/yfeng95/DECA) — FLAME 라이선스 준수 필요
-- [FLAME](https://flame.is.tue.mpg.de/) — 비상업적 연구 라이선스
-- [Blender](https://www.blender.org/) — GPL v2
+## Legacy Notes
+
+예전 `silicone / latex / resin / material transfer` 흐름과 Deep3DFaceRecon 기반 문서는 `docs/` 아래에 레거시 참고 자료로 남겨두었습니다. 현재 메인 앱 동작과는 다를 수 있습니다.

@@ -1,6 +1,5 @@
 """
-End-to-end test: DECA inference → Blender PBR render → Composite.
-Produces: original | silicone | latex | resin comparison grid.
+End-to-end test: DECA inference -> single mask render -> composite.
 
 Usage:
     conda run -n deca-env python scripts/test_blender_pipeline.py \
@@ -9,11 +8,9 @@ Usage:
 """
 
 import sys
-import os
 import argparse
 import subprocess
 import time
-import json
 from pathlib import Path
 
 import cv2
@@ -26,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "syntheti
 
 
 def run_deca(image_path, out_dir):
-    """Run DECA inference and save necessary artifacts."""
     from webapp_deca import DECAModel
 
     print("\n[1/3] DECA Inference...")
@@ -42,21 +38,18 @@ def run_deca(image_path, out_dir):
     np.save(str(out_dir / "lm2d.npy"), result["lm2d"])
     np.save(str(out_dir / "cam_params.npy"), result["cam_params"])
 
-    orig_bgr = cv2.imread(str(image_path))
-    cv2.imwrite(str(out_dir / "original.jpg"), orig_bgr)
-
+    original_bgr = cv2.imread(str(image_path))
+    cv2.imwrite(str(out_dir / "original.jpg"), original_bgr)
     return result
 
 
 def run_blender(obj_path, out_dir, cam_params, samples=64):
-    """Run Blender headless rendering for all 3 materials."""
-    print("\n[2/3] Blender PBR Rendering (silicone / latex / resin)...")
+    print("\n[2/3] Blender single mask render...")
     t0 = time.time()
 
     cmd = [
         BLENDER, "--background", "--python", RENDER_SCRIPT, "--",
         "--obj", str(obj_path),
-        "--material", "all",
         "--output_dir", str(out_dir),
         "--samples", str(samples),
         "--cam_params", str(cam_params[0]), str(cam_params[1]), str(cam_params[2]),
@@ -64,7 +57,7 @@ def run_blender(obj_path, out_dir, cam_params, samples=64):
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        print(f"  Blender ERROR:\n{proc.stderr[-500:]}")
+        print(f"  Blender ERROR:\n{(proc.stderr or proc.stdout)[-500:]}")
         return False
 
     elapsed = time.time() - t0
@@ -73,8 +66,7 @@ def run_blender(obj_path, out_dir, cam_params, samples=64):
 
 
 def run_composite(out_dir):
-    """Composite Blender renders onto original image."""
-    from composite_blender import composite_render, MATERIAL_NAMES
+    from composite_blender import composite_render
 
     print("\n[3/3] Compositing onto original...")
     t0 = time.time()
@@ -82,50 +74,31 @@ def run_composite(out_dir):
     original_bgr = cv2.imread(str(out_dir / "original.jpg"))
     tform_params = np.load(str(out_dir / "tform_params.npy"))
     lm2d = np.load(str(out_dir / "lm2d.npy"))
+    render_rgba = cv2.imread(str(out_dir / "mask_render.png"), cv2.IMREAD_UNCHANGED)
 
-    composites = {}
-    for mat_name in MATERIAL_NAMES:
-        render_path = out_dir / f"{mat_name}_render.png"
-        if not render_path.exists():
-            print(f"  [SKIP] {mat_name}")
-            continue
+    result = composite_render(
+        original_bgr,
+        render_rgba,
+        tform_params,
+        lm2d,
+        source_lm2d=lm2d,
+    )
+    cv2.imwrite(str(out_dir / "mask_composite.png"), result)
 
-        render_rgba = cv2.imread(str(render_path), cv2.IMREAD_UNCHANGED)
-        result = composite_render(original_bgr, render_rgba, tform_params, lm2d)
-        out_path = out_dir / f"{mat_name}_composite.png"
-        cv2.imwrite(str(out_path), result)
-        composites[mat_name] = result
-        print(f"  [OK] {mat_name}")
-
-    # Comparison grid: original | silicone | latex | resin
     h, w = original_bgr.shape[:2]
     target_h = 512
-    scale = target_h / h
+    target_w = int(w * (target_h / h))
+    original_resized = cv2.resize(original_bgr, (target_w, target_h))
+    composite_resized = cv2.resize(result, (target_w, target_h))
+    grid = np.hstack([original_resized, composite_resized])
 
-    panels = [original_bgr]
-    labels = ["Original"]
-    for name in MATERIAL_NAMES:
-        if name in composites:
-            panels.append(composites[name])
-            labels.append(name.capitalize())
-
-    resized = []
-    for p in panels:
-        rp = cv2.resize(p, (int(w * scale), target_h))
-        resized.append(rp)
-
-    grid = np.hstack(resized)
-
-    for i, label in enumerate(labels):
-        x = i * resized[0].shape[1] + 10
-        cv2.putText(grid, label, (x, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.putText(grid, label, (x, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1)
-
+    cv2.putText(grid, "Original", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    cv2.putText(grid, "Mask Composite", (target_w + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
     cv2.imwrite(str(out_dir / "comparison_grid.png"), grid)
-    print(f"\n  Comparison grid: {out_dir / 'comparison_grid.png'}")
 
     elapsed = time.time() - t0
     print(f"  Composite done ({elapsed:.1f}s)")
+    print(f"  Output: {out_dir / 'comparison_grid.png'}")
 
 
 def main():
@@ -139,18 +112,16 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print("  Blender PBR Mask Pipeline Test")
+    print("  Blender Mask Pipeline Test")
     print("=" * 60)
 
     result = run_deca(args.image, out_dir)
-
-    cam_params = result["cam_params"]
     obj_path = out_dir / "detail.obj"
     if not obj_path.exists():
         print(f"ERROR: {obj_path} not found")
         return
 
-    ok = run_blender(obj_path, out_dir, cam_params, samples=args.samples)
+    ok = run_blender(obj_path, out_dir, result["cam_params"], samples=args.samples)
     if not ok:
         return
 
